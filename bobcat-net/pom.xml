@@ -9,7 +9,7 @@
     </parent>
 
     <groupId>com.bobcat</groupId>
-    <artifactId>bobcat-common</artifactId>
+    <artifactId>bobcat-net</artifactId>
     <version>0.0.1</version>
 
     <build>
@@ -23,7 +23,7 @@
                     <archive>
                         <manifest>
                             <addClasspath>true</addClasspath>
-                            <mainClass>com.bobcat.common.Main</mainClass>
+                            <mainClass>com.bobcat.net.Main</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
@@ -33,7 +33,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.bobcat.common.Main</mainClass>
+                            <mainClass>com.bobcat.net.Main</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
