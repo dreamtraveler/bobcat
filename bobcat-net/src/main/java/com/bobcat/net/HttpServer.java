@@ -60,10 +60,15 @@ public class HttpServer implements Ifire {
         return listener;
     }
 
-    public void AddClient(SocketChannel channel) throws IOException {
+    public boolean AddClient(SocketChannel channel) throws IOException {
         genId++;
         HttpClient client = new HttpClient(genId, channel, event_loop);
-        clienMap.put(genId, client);
+        if (!client.isClose()) {
+            clienMap.put(genId, client);
+            return true;
+        } else {
+            return false;
+        }
     }
 
     public void DelClient(long id) {
@@ -80,8 +85,9 @@ public class HttpServer implements Ifire {
         try {
             channel = listenerChannel.accept();
             channel.configureBlocking(false);
-            AddClient(channel);
-            System.out.println("accept connection:" + channel.getRemoteAddress().toString());
+            if (AddClient(channel)) {
+                System.out.println("accept connection:" + channel.getRemoteAddress().toString());
+            }
         } catch (Throwable e) {
             System.out.println("failed to accept connection:" + e.toString());
             System.exit(0);

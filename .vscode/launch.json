@@ -1,0 +1,24 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "common",
+            "request": "launch",
+            "mainClass": "com.bobcat.common.Main",
+            "projectName": "bobcat-common",
+            "cwd": "${workspaceFolder}/bobcat-common"
+        },
+        {
+            "type": "java",
+            "name": "net",
+            "request": "launch",
+            "mainClass": "com.bobcat.net.Main",
+            "projectName": "bobcat-net",
+            "cwd": "${workspaceFolder}/bobcat-net"
+        }
+    ]
+}

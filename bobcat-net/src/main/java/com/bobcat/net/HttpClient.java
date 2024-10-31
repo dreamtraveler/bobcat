@@ -24,6 +24,7 @@ public class HttpClient implements Ifire {
     private boolean isKeepAlive = true;
     private boolean isChunked = false;
     private boolean isClose = false;
+    private ISock sock;
 
     private EOFException endException = new EOFException();
 
@@ -36,6 +37,13 @@ public class HttpClient implements Ifire {
     HttpClient(long id, SocketChannel channel, EventLoop loop) throws IOException {
         this.id = id;
         this.channel = channel;
+
+        sock = new SslSock(false);
+        // sock = new TcpSock(false);
+        if (!sock.init()) {
+            close();
+            return;
+        }
         key = loop.register(channel, SelectionKey.OP_READ, this);
         initHTTPParser();
     }
@@ -58,16 +66,25 @@ public class HttpClient implements Ifire {
         }
     }
 
+    public boolean isClose() {
+        return isClose;
+    }
+
     public void close() {
         if (isClose) {
             return;
         }
         System.out.printf("close channel id[%d]\n", id);
         isClose = true;
-        key.cancel();
+        sock.close(channel);
+        if (key != null) {
+            key.cancel();
+        }
         EventLoop.closeChannelSilently(channel);
         writeStream.destory();
-        context.destory();
+        if (context != null) {
+            context.destory();
+        }
         context = null;
         writeStream = null;
         channel = null;
@@ -148,18 +165,18 @@ public class HttpClient implements Ifire {
     void reset() {
         parser = new HTTPParser(ParserType.HTTP_REQUEST);
         context.reset();
+        sock.reset();
     }
 
     @Override
     public void onRead() {
+        System.err.println("onRead");
         if (!channel.isOpen()) {
             key.cancel();
             return;
         }
         try {
-            context.stream.ensureWritable(1024);
-            ByteBuffer buffer = context.stream.unusedBuf();
-            int readBytes = (int) channel.read(buffer);
+            int readBytes = sock.read(channel, key, context.stream);
             if (readBytes > 0) {
                 int ret = parser.execute(settings, context.stream.peekBuf(readBytes));
                 if (ret == readBytes) {
@@ -188,9 +205,21 @@ public class HttpClient implements Ifire {
 
     @Override
     public void onWrite() {
+        System.err.println("onWrite");
+        if (!channel.isOpen()) {
+            key.cancel();
+            return;
+        }
         try {
-            channel.write(writeStream.availableBuf());
-            cancelWrite();
+            int n = sock.write(channel, key, writeStream);
+            if (n > 0) {
+                writeStream.skip(n);
+            }
+            if (writeStream.len() > 0) {
+                addWrite();
+            } else {
+                cancelWrite();
+            }
         } catch (Exception e) {
             e.printStackTrace();
             close();
@@ -234,7 +263,7 @@ public class HttpClient implements Ifire {
         } else {
             addHeadKV("Content-Type", "text/plain; charset=utf-8");
         }
-        if (isKeepAlive) {
+        if (isKeepAlive && code == 200) {
             addHeadKV("Connection", "keep-alive");
         } else {
             addHeadKV("Connection", "close");
