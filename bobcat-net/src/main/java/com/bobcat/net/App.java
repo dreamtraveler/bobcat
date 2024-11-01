@@ -19,7 +19,7 @@ public class App {
         running = true;
         while (running) {
             try {
-                loop.select(1000);
+                loop.select(10);
                 loop.handleSelectedKeys();
             } catch (Exception e) {
                 System.out.println(e.toString());

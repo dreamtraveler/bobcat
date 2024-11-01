@@ -107,12 +107,15 @@ public class SslSock implements ISock {
     }
 
     private ByteBuffer handleBufferUnderflow(ByteBuffer buffer, int sessionProposedCapacity) {
-        if (sessionProposedCapacity < buffer.limit()) {
+        if (buffer.position() > 0) {
+            buffer.flip();
+        }
+        if (sessionProposedCapacity < buffer.limit() || buffer.limit() < buffer.capacity()) {
             return buffer;
         } else {
             ByteBuffer replaceBuffer = enlargeBuffer(buffer, sessionProposedCapacity);
-            buffer.flip();
             replaceBuffer.put(buffer);
+            replaceBuffer.flip();
             return replaceBuffer;
         }
     }
@@ -145,10 +148,8 @@ public class SslSock implements ISock {
                         peerNetData.flip();
                         result = engine.unwrap(peerNetData, peerAppData);
                         hsStatus = result.getHandshakeStatus();
-                        System.out.printf("isConnected=%b, pos=%d, limit=%d\n", isConnected(), peerAppData.position(), peerNetData.limit());
                     } catch (SSLException sslException) {
-                        System.out.println(
-                                "A problem was encountered while processing the data that caused the SSLEngine to abort. Will try to properly close connection...");
+                        System.out.println(sslException.toString());
                         throw sslException;
                     }
                     switch (result.getStatus()) {
@@ -174,8 +175,7 @@ public class SslSock implements ISock {
                         result = engine.wrap(myAppData, myNetData);
                         hsStatus = result.getHandshakeStatus();
                     } catch (SSLException sslException) {
-                        System.out.println(
-                                "A problem was encountered while processing the data that caused the SSLEngine to abort. Will try to properly close connection...");
+                        System.out.println(sslException.toString());
                         throw sslException;
                     }
                     switch (result.getStatus()) {
@@ -206,7 +206,9 @@ public class SslSock implements ISock {
                         executor.execute(() -> {
                             task.run();
                             System.err.println("handshake About NEED_TASK...FINISH");
-                            key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                            if (key.isValid()) {
+                                key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                            }
                         });
                     }
                     System.err.println("handshake About NEED_TASK...");
