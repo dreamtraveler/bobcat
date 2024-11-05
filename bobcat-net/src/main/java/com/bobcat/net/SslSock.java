@@ -1,31 +1,32 @@
 package com.bobcat.net;
 
+import java.io.EOFException;
 import java.io.FileInputStream;
-import java.nio.ByteBuffer;
-import java.nio.channels.SocketChannel;
-import java.nio.channels.SelectionKey;
-import java.security.KeyStore;
 import java.io.IOException;
-
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLEngine;
-import javax.net.ssl.TrustManagerFactory;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLEngineResult;
-import javax.net.ssl.SSLEngineResult.HandshakeStatus;
-import javax.net.ssl.SSLSession;
-import javax.net.ssl.SSLException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.io.EOFException;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLEngineResult.HandshakeStatus;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 public class SslSock implements ISock {
-    static private SSLContext serverContext;
-    static private SSLContext clientContext;
+
+    private static SSLContext serverContext;
+    private static SSLContext clientContext;
     private SSLEngine engine;
-    private boolean isClient;
     private HandshakeStatus hsStatus;
 
     private ByteBuffer myAppData;
@@ -34,14 +35,23 @@ public class SslSock implements ISock {
     private ByteBuffer myNetData;
 
     private static ExecutorService executor = Executors.newSingleThreadExecutor();
-    private EOFException endException = new EOFException();
 
-    SslSock(boolean isClient) {
-        this.isClient = isClient;
+    private static class TrustAllManager implements X509TrustManager {
+
+        @Override
+        public void checkClientTrusted(X509Certificate[] x509Certificates, String s) {}
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] x509Certificates, String s) {}
+
+        @Override
+        public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[0];
+        }
     }
 
     @Override
-    public boolean init() {
+    public void init(boolean isClient, String host, int port) throws Exception {
         try {
             SSLContext sslContext = isClient ? clientContext : serverContext;
             if (sslContext == null) {
@@ -64,10 +74,14 @@ public class SslSock implements ISock {
                 tmf.init(ksTrust);
 
                 sslContext = SSLContext.getInstance("TLSv1.2");
-                sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+                if (isClient) {
+                    sslContext.init(null, new TrustManager[] { new TrustAllManager() }, new SecureRandom());
+                } else {
+                    sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+                }
             }
             if (isClient) {
-                engine = sslContext.createSSLEngine("127.0.0.1", 9027);
+                engine = sslContext.createSSLEngine(host, port);
                 engine.setUseClientMode(true);
                 clientContext = sslContext;
             } else {
@@ -85,11 +99,9 @@ public class SslSock implements ISock {
             myNetData = ByteBuffer.allocate(packetBufferSize);
 
             engine.beginHandshake();
-
-            return true;
         } catch (Exception e) {
             e.printStackTrace();
-            return false;
+            throw e;
         }
     }
 
@@ -110,7 +122,7 @@ public class SslSock implements ISock {
         if (buffer.position() > 0) {
             buffer.flip();
         }
-        if (sessionProposedCapacity < buffer.limit() || buffer.limit() < buffer.capacity()) {
+        if (sessionProposedCapacity <= buffer.limit() || buffer.limit() < buffer.capacity()) {
             return buffer;
         } else {
             ByteBuffer replaceBuffer = enlargeBuffer(buffer, sessionProposedCapacity);
@@ -124,9 +136,6 @@ public class SslSock implements ISock {
         if (isConnected()) {
             return true;
         }
-        if (key != null) {
-            key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
-        }
         System.err.println("About to do handshake...");
 
         SSLEngineResult result;
@@ -135,18 +144,15 @@ public class SslSock implements ISock {
         while (hsStatus != HandshakeStatus.FINISHED && hsStatus != HandshakeStatus.NOT_HANDSHAKING) {
             switch (hsStatus) {
                 case NEED_UNWRAP:
-                    if (peerNetData.limit() < peerNetData.capacity()) {
-                        peerNetData.compact();
-                    }
+                    int mark = peerNetData.position();
                     int ret = channel.read(peerNetData);
                     if (ret < 0) {
-                        throw endException;
-                    } else if (ret == 0) {
-                        return false;
+                        throw new EOFException();
                     }
                     try {
                         peerNetData.flip();
                         result = engine.unwrap(peerNetData, peerAppData);
+                        peerNetData.compact();
                         hsStatus = result.getHandshakeStatus();
                     } catch (SSLException sslException) {
                         System.out.println(sslException.toString());
@@ -163,11 +169,15 @@ public class SslSock implements ISock {
                             break;
                         case CLOSED:
                             hsStatus = engine.getHandshakeStatus();
-                            throw endException;
+                            throw new EOFException();
                         default:
                             throw new IllegalStateException("Invalid SSL status: " + result.getStatus());
                     }
-                    break;
+                    if (ret == 0 && hsStatus == HandshakeStatus.NEED_UNWRAP && peerNetData.position() == mark) {
+                        return false;
+                    } else {
+                        break;
+                    }
                 case NEED_WRAP:
                     myNetData.clear();
                     myAppData.clear();
@@ -184,7 +194,11 @@ public class SslSock implements ISock {
                             while (myNetData.hasRemaining()) {
                                 channel.write(myNetData);
                             }
-                            break;
+                            if (key == null) {
+                                return false;
+                            } else {
+                                break;
+                            }
                         case BUFFER_OVERFLOW:
                             myNetData = enlargeBuffer(myNetData, session.getPacketBufferSize());
                             break;
@@ -192,7 +206,7 @@ public class SslSock implements ISock {
                             throw new SSLException(
                                     "Buffer underflow occured after a wrap. I don't think we should ever get here.");
                         case CLOSED:
-                            throw endException;
+                            throw new EOFException();
                         default:
                             throw new IllegalStateException("Invalid SSL status: " + result.getStatus());
                     }
@@ -213,7 +227,7 @@ public class SslSock implements ISock {
                     }
                     System.err.println("handshake About NEED_TASK...");
                     hsStatus = engine.getHandshakeStatus();
-                    return isConnected();
+                    break;
                 case FINISHED:
                     break;
                 case NOT_HANDSHAKING:
@@ -221,6 +235,9 @@ public class SslSock implements ISock {
                 default:
                     throw new IllegalStateException("Invalid SSL status: " + hsStatus);
             }
+        }
+        if (isConnected() && key != null && key.isValid()) {
+            key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
         }
         System.out.println("hsStatus=" + hsStatus);
         return isConnected();
@@ -245,20 +262,24 @@ public class SslSock implements ISock {
             peerNetData.compact();
         }
         int bytesRead = channel.read(peerNetData);
+        System.out.println("read bytesRead=" + bytesRead);
         peerNetData.flip();
         if (bytesRead > 0 || peerNetData.limit() > 0) {
             while (peerNetData.hasRemaining()) {
                 stream.ensureWritable(peerNetData.limit());
                 peerAppData = stream.unusedBuf();
+                int mark = peerAppData.position();
                 SSLEngineResult result = engine.unwrap(peerNetData, peerAppData);
                 switch (result.getStatus()) {
                     case OK:
-                        int readN = (peerAppData.position() - peerAppData.arrayOffset());
+                        int readN = peerAppData.position() - mark;
+                        peerAppData.flip();
                         return readN;
                     case BUFFER_OVERFLOW:
                         stream.ensureWritable(engine.getSession().getApplicationBufferSize());
                         break;
                     case BUFFER_UNDERFLOW:
+                        System.out.println("BUFFER_UNDERFLOW");
                         peerNetData = handleBufferUnderflow(peerNetData, engine.getSession().getPacketBufferSize());
                         return 0;
                     case CLOSED:
@@ -300,7 +321,7 @@ public class SslSock implements ISock {
                     throw new SSLException(
                             "Buffer underflow occured after a wrap. I don't think we should ever get here.");
                 case CLOSED:
-                    throw endException;
+                    throw new EOFException();
                 default:
                     throw new IllegalStateException("Invalid SSL status: " + result.getStatus());
             }
@@ -331,6 +352,5 @@ public class SslSock implements ISock {
         peerAppData = null;
         peerNetData = null;
         myNetData = null;
-        endException = null;
     }
 }

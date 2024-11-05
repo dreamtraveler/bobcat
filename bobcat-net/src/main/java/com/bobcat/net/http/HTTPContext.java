@@ -2,6 +2,7 @@ package com.bobcat.net.http;
 
 import java.util.ArrayList;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 
 import com.bobcat.net.Stream;
 
@@ -11,9 +12,6 @@ public class HTTPContext {
         public FieldData name = new FieldData(); // Header name
         public FieldData value = new FieldData(); // Header value
     }
-
-    public boolean isClient = false;
-    public boolean isConnect = false;
 
     public enum HPhase {
         FIELD, VALUE;
@@ -37,7 +35,6 @@ public class HTTPContext {
     }
 
     public void reset() {
-        isConnect = false;
         state = HPhase.VALUE;
         completed = 0;
         headers.clear();
@@ -72,6 +69,22 @@ public class HTTPContext {
 
     public String getBody() {
         return StandardCharsets.UTF_8.decode(stream.slice(body.off, body.len)).toString();
+    }
+
+    public ByteBuffer getBodyBuf() {
+        return stream.slice(body.off, body.len);
+    }
+
+    public void iterator(IteratorHead func) {
+        for (Head h : headers) {
+            if (h.name.len > 0 && h.value.len > 0) {
+                int ret = func.apply(StandardCharsets.UTF_8.decode(stream.slice(h.name.off, h.name.len)).toString(),
+                        StandardCharsets.UTF_8.decode(stream.slice(h.value.off, h.value.len)).toString());
+                if (ret != 0) {
+                    break;
+                }
+            }
+        }
     }
 
     public void destory() {

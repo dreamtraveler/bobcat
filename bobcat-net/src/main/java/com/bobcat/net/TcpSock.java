@@ -5,12 +5,9 @@ import java.nio.channels.SelectionKey;
 import java.io.IOException;
 
 public class TcpSock implements ISock {
-    TcpSock(boolean isClient) {}
 
     @Override
-    public boolean init() {
-        return true;
-    }
+    public void init(boolean isClient, String host, int port) throws Exception {}
 
     @Override
     public int read(SocketChannel channel, SelectionKey key, Stream stream) throws IOException {

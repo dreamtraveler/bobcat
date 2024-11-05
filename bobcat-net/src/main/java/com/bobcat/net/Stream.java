@@ -37,6 +37,14 @@ public class Stream {
         return 0;
     }
 
+    public int append(ByteBuffer b) {
+        int remaining = b.remaining();
+        ensureWritable(remaining);
+        System.arraycopy(b.array(), b.position() + b.arrayOffset(), buf, size, remaining);
+        size = size + remaining;
+        return 0;
+    }
+
     public int roundup(int x, int y) {
         return ((x + y - 1) / y) * y;
     }

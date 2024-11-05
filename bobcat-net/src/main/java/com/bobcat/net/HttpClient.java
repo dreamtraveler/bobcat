@@ -1,30 +1,35 @@
 package com.bobcat.net;
 
-import java.io.EOFException;
-import java.nio.channels.SocketChannel;
-import java.nio.channels.SelectionKey;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-
+import com.bobcat.common.Reentrant;
 import com.bobcat.net.http.FieldData;
+import com.bobcat.net.http.HTTPCode;
 import com.bobcat.net.http.HTTPContext;
 import com.bobcat.net.http.HTTPParser;
-import com.bobcat.net.http.HTTPCode;
 import com.bobcat.net.http.ParserSettings;
 import com.bobcat.net.http.ParserType;
+import java.io.EOFException;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 
 public class HttpClient implements Ifire {
+
     private long id = 0;
     private SocketChannel channel;
     private SelectionKey key;
-    HTTPParser parser;
-    ParserSettings settings;
+    private HTTPParser parser;
+    private ParserSettings settings;
     public HTTPContext context;
-    Stream writeStream = new Stream(1024);
+    private Stream writeStream = new Stream(1024);
     private boolean isKeepAlive = true;
     private boolean isChunked = false;
     private boolean isClose = false;
     private ISock sock;
+    private Reentrant resumeReent;
+    private boolean isClient = false;
 
     private EOFException endException = new EOFException();
 
@@ -34,18 +39,30 @@ public class HttpClient implements Ifire {
     private static final byte[] sepBytes = "\r\n".getBytes();
     private static final byte[] chunkEndBytes = "0\r\n\r\n".getBytes();
 
-    HttpClient(long id, SocketChannel channel, EventLoop loop) throws IOException {
+    HttpClient(long id) {
         this.id = id;
+    }
+
+    public void init(
+            SocketChannel channel,
+            boolean isClient,
+            String host,
+            int port) throws Exception {
         this.channel = channel;
 
-        sock = new SslSock(false);
+        this.isClient = isClient;
+        sock = new SslSock();
         // sock = new TcpSock(false);
-        if (!sock.init()) {
-            close();
-            return;
+        sock.init(isClient, host, port);
+        int ops = SelectionKey.OP_READ;
+        ParserType parserType = ParserType.HTTP_REQUEST;
+        if (isClient) {
+            ops |= SelectionKey.OP_WRITE;
+            ops |= SelectionKey.OP_CONNECT;
+            parserType = ParserType.HTTP_RESPONSE;
         }
-        key = loop.register(channel, SelectionKey.OP_READ, this);
-        initHTTPParser();
+        key = App.impl().register(channel, ops, this);
+        initHTTPParser(parserType);
     }
 
     long id() {
@@ -76,7 +93,9 @@ public class HttpClient implements Ifire {
         }
         System.out.printf("close channel id[%d]\n", id);
         isClose = true;
-        sock.close(channel);
+        if (sock != null) {
+            sock.close(channel);
+        }
         if (key != null) {
             key.cancel();
         }
@@ -85,6 +104,7 @@ public class HttpClient implements Ifire {
         if (context != null) {
             context.destory();
         }
+        sock = null;
         context = null;
         writeStream = null;
         channel = null;
@@ -95,18 +115,18 @@ public class HttpClient implements Ifire {
         HttpServer.impl().DelClient(id);
     }
 
-    private void initHTTPParser() {
-        parser = new HTTPParser(ParserType.HTTP_REQUEST);
+    private void initHTTPParser(ParserType type) {
+        parser = new HTTPParser(type);
         settings = new ParserSettings();
         context = new HTTPContext();
 
-        settings.on_message_begin = (p) -> {
+        settings.on_message_begin = p -> {
             return 0;
         };
         settings.on_url = (p, buf, pos, len) -> {
             FieldData url = context.url;
             if (url.off == 0) {
-                url.off = context.stream.size() + pos;
+                url.off = pos;
             }
             if (url.off > 0) {
                 url.len += len;
@@ -116,14 +136,14 @@ public class HttpClient implements Ifire {
         settings.on_fragment = (p, buf, pos, len) -> {
             return 0;
         };
-        settings.on_status_complete = (p) -> {
+        settings.on_status_complete = p -> {
             return 0;
         };
         settings.on_header_field = (p, buf, pos, len) -> {
             if (context.state == HTTPContext.HPhase.VALUE) {
                 context.state = HTTPContext.HPhase.FIELD;
                 HTTPContext.Head h = context.addHead();
-                h.name.off = context.stream.size() + pos;
+                h.name.off = pos;
             }
             HTTPContext.Head h = context.getLastHead();
             h.name.len += len;
@@ -133,27 +153,28 @@ public class HttpClient implements Ifire {
             HTTPContext.Head h = context.getLastHead();
             if (context.state == HTTPContext.HPhase.FIELD) {
                 context.state = HTTPContext.HPhase.VALUE;
-                h.value.off = context.stream.size() + pos;
+                h.value.off = pos;
             }
             if (h.value.off > 0) {
                 h.value.len += len;
             }
             return 0;
         };
-        settings.on_headers_complete = (p) -> {
+        settings.on_headers_complete = p -> {
             return 0;
         };
         settings.on_body = (p, buf, pos, len) -> {
             FieldData body = context.body;
             if (body.off == 0) {
-                body.off = context.stream.size() + pos;
+                body.off = pos;
             }
             if (body.off > 0) {
                 body.len += len;
             }
             return 0;
         };
-        settings.on_message_complete = (p) -> {
+        settings.on_message_complete = p -> {
+            System.out.println("on_message_complete");
             context.completed += 1;
             return 0;
         };
@@ -168,6 +189,58 @@ public class HttpClient implements Ifire {
         sock.reset();
     }
 
+    public static HttpClient get(Reentrant reent, String url) {
+        HttpClient client = HttpServer.impl().AddClient();
+        try {
+            client.makeRequest(reent, "GET", url, null);
+            return client;
+        } catch (Exception e) {
+            client.close();
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public static HttpClient post(Reentrant reent, String url, byte[] body) {
+        HttpClient client = HttpServer.impl().AddClient();
+        try {
+            client.makeRequest(reent, "POST", url, body);
+            return client;
+        } catch (Exception e) {
+            client.close();
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public void makeRequest(Reentrant reent, String method, String url, byte[] body) throws Exception {
+        resumeReent = reent;
+        channel = SocketChannel.open();
+        channel.configureBlocking(false);
+        URI uri = URI.create(url);
+        int port = uri.getPort();
+        if (port == -1) {
+            port = uri.getScheme().equals("https") ? 443 : 80;
+        }
+        init(channel, true, uri.getHost(), port);
+        InetSocketAddress address = new InetSocketAddress(uri.getHost(), port);
+        channel.connect(address);
+
+        String query = uri.getRawQuery();
+        String path = query == null ? uri.getRawPath() : uri.getRawPath() + "?" + query;
+        AddMethodUrl(method, path);
+        addHeadKV("Host", address.getHostName());
+        addHeadKV("User-Agent", "bobcat");
+        addHeadKV("Accept", "*/*");
+        int len = body == null ? 0 : body.length;
+        addHeadKV("Content-Length", String.valueOf(len));
+        addHeadEnd();
+        if (body != null) {
+            writeStream.append(body);
+        }
+        System.err.println("makeRequest:\n" + StandardCharsets.UTF_8.decode(writeStream.availableBuf()));
+    }
+
     @Override
     public void onRead() {
         System.err.println("onRead");
@@ -176,27 +249,34 @@ public class HttpClient implements Ifire {
             return;
         }
         try {
-            int readBytes = sock.read(channel, key, context.stream);
-            if (readBytes > 0) {
-                int ret = parser.execute(settings, context.stream.peekBuf(readBytes));
-                if (ret == readBytes) {
+            while (true) {
+                int readBytes = sock.read(channel, key, context.stream);
+                if (readBytes > 0) {
+                    int ret = parser.execute(settings, context.stream.peekBuf(readBytes));
                     context.stream.addSize(readBytes);
-                } else {
-                    System.out.printf("http parse error ret[%d] != readBytes[%d]\n", ret, readBytes);
-                    throw endException;
-                }
-                if (context.completed > 0) {
-                    if (context.isClient) {
-                        // Resume(0);
-                    } else {
-                        HttpServer.impl().serveHTTP(this);
-                        reset();
+                    if (ret != readBytes) {
+                        System.out.printf("http parse error ret[%d] != readBytes[%d]:%s\n", ret, readBytes,
+                                StandardCharsets.UTF_8.decode(context.stream.availableBuf()).toString());
+                        throw endException;
                     }
+                    if (context.completed > 0) {
+                        if (isClient && resumeReent != null) {
+                            Reentrant reent = resumeReent;
+                            resumeReent = null;
+                            reent.run(null);
+                            reset();
+                        } else {
+                            HttpServer.impl().serveHTTP(this);
+                            reset();
+                        }
+                        break;
+                    }
+                } else if (readBytes < 0) {
+                    System.out.println("peer close the socket");
+                    throw endException;
+                } else {
+                    break;
                 }
-
-            } else if (readBytes < 0) {
-                System.out.println("peer close the socket");
-                throw endException;
             }
         } catch (Exception e) {
             close();
@@ -214,9 +294,11 @@ public class HttpClient implements Ifire {
             int n = sock.write(channel, key, writeStream);
             if (n > 0) {
                 writeStream.skip(n);
-            }
-            if (writeStream.len() > 0) {
-                addWrite();
+                if (writeStream.len() > 0) {
+                    addWrite();
+                } else {
+                    cancelWrite();
+                }
             } else {
                 cancelWrite();
             }
@@ -224,6 +306,15 @@ public class HttpClient implements Ifire {
             e.printStackTrace();
             close();
         }
+    }
+
+    public void AddMethodUrl(String method, String url) {
+        writeStream.append(method.getBytes());
+        writeStream.append(spaceBytes);
+        writeStream.append(url.getBytes());
+        writeStream.append(spaceBytes);
+        writeStream.append(schemaBytes);
+        writeStream.append(sepBytes);
     }
 
     public void addHeadCode(int code) {
@@ -251,11 +342,11 @@ public class HttpClient implements Ifire {
         reply(code, null, null);
     }
 
-    public void reply(int code, byte[] buf) {
+    public void reply(int code, ByteBuffer buf) {
         reply(code, buf, null);
     }
 
-    public void reply(int code, byte[] buf, IAddHeader addHeader) {
+    public void reply(int code, ByteBuffer buf, IAddHeader addHeader) {
         // write head
         addHeadCode(code);
         if (addHeader != null) {
@@ -268,7 +359,7 @@ public class HttpClient implements Ifire {
         } else {
             addHeadKV("Connection", "close");
         }
-        int len = buf == null ? 0 : buf.length;
+        int len = buf == null ? 0 : buf.remaining();
         if (isChunked) {
             addHeadKV("Transfer-Encoding", "chunked");
         } else {

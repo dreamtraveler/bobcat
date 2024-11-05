@@ -5,7 +5,7 @@ import java.nio.channels.SelectionKey;
 import java.io.IOException;
 
 public interface ISock {
-    boolean init();
+    void init(boolean isClient, String host, int port) throws Exception;
 
     int read(SocketChannel channel, SelectionKey key, Stream stream) throws IOException;
 

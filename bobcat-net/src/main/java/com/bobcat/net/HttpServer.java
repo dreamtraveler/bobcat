@@ -7,17 +7,17 @@ import java.nio.channels.SelectionKey;
 import java.util.Map;
 import java.util.HashMap;
 import java.lang.Long;
-import java.io.IOException;
 
 public class HttpServer implements Ifire {
     boolean stopped = false;
     SelectionKey listener;
     ServerSocketChannel listenerChannel;
     long genId = 1;
-    EventLoop event_loop;
+    String ip = "127.0.0.1";
+    int port = 8080;
 
     private final Map<Long, HttpClient> clienMap = new HashMap<>();
-    private Map<String, HttpHandler> handlerMap = new HashMap<>();
+    private Map<String, ICreateHttpHandler> handlerMap = new HashMap<>();
 
     private static HttpServer instance;
 
@@ -31,14 +31,13 @@ public class HttpServer implements Ifire {
     }
 
     public void start(EventLoop loop) {
-        this.event_loop = loop;
         try {
-            String ip = "127.0.0.1";
-            int port = 8080;
+            ip = "127.0.0.1";
+            port = 8080;
             listenerChannel = ServerSocketChannel.open();
             listenerChannel.socket().bind(new InetSocketAddress(ip, port));
             listenerChannel.configureBlocking(false);
-            listener = event_loop.register(listenerChannel, SelectionKey.OP_ACCEPT, this);
+            listener = loop.register(listenerChannel, SelectionKey.OP_ACCEPT, this);
             System.err.printf("server listen on %s:%d\n", ip, port);
         } catch (Exception e) {
             System.err.println("Failed to start protocol server accepter");
@@ -60,14 +59,18 @@ public class HttpServer implements Ifire {
         return listener;
     }
 
-    public boolean AddClient(SocketChannel channel) throws IOException {
+    public HttpClient AddClient() {
         genId++;
-        HttpClient client = new HttpClient(genId, channel, event_loop);
-        if (!client.isClose()) {
-            clienMap.put(genId, client);
-            return true;
-        } else {
-            return false;
+        HttpClient client = new HttpClient(genId);
+        clienMap.put(genId, client);
+        return client;
+    }
+
+    public HttpClient GetClient(long id) {
+        try {
+            return clienMap.get(id);
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -81,20 +84,22 @@ public class HttpServer implements Ifire {
 
     @Override
     public void onAccept() {
-        SocketChannel channel = null;
+        HttpClient client = null;
         try {
-            channel = listenerChannel.accept();
+            SocketChannel channel = listenerChannel.accept();
             channel.configureBlocking(false);
-            if (AddClient(channel)) {
-                System.out.println("accept connection:" + channel.getRemoteAddress().toString());
-            }
+            client = AddClient();
+            client.init(channel, false, ip, port);
+            System.out.println("accept connection:" + channel.getRemoteAddress().toString());
         } catch (Throwable e) {
-            System.out.println("failed to accept connection:" + e.toString());
-            System.exit(0);
+            e.printStackTrace();
+            if (client != null) {
+                client.close();
+            }
         }
     }
 
-    public void register(String path, HttpHandler handler) {
+    public void register(String path, ICreateHttpHandler handler) {
         handlerMap.put(path, handler);
     }
 
@@ -103,19 +108,19 @@ public class HttpServer implements Ifire {
         System.out.println("ServeHTTP:\n" + bufStr);
 
         String path = client.context.getPath();
-        HttpHandler handler = handlerMap.get(path);
-        if (handler != null) {
-            try {
-                int ret = handler.run(client);
-                if (ret != 0) {
-                    client.reply(ret);
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-                client.reply(500);
-            }
-        } else {
+        ICreateHttpHandler creater = handlerMap.get(path);
+        if (creater == null) {
             client.reply(404);
+            return;
+        }
+
+        try {
+            HttpReentrant reent = creater.create();
+            reent.handle(client);
+            reent.run(null);
+        } catch (Exception e) {
+            e.printStackTrace();
+            client.reply(500);
         }
     }
 }
