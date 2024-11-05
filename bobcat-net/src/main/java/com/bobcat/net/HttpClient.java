@@ -223,22 +223,36 @@ public class HttpClient implements Ifire {
             port = uri.getScheme().equals("https") ? 443 : 80;
         }
         init(channel, true, uri.getHost(), port);
-        InetSocketAddress address = new InetSocketAddress(uri.getHost(), port);
-        channel.connect(address);
+        final int finalPort = port;
 
-        String query = uri.getRawQuery();
-        String path = query == null ? uri.getRawPath() : uri.getRawPath() + "?" + query;
-        AddMethodUrl(method, path);
-        addHeadKV("Host", address.getHostName());
-        addHeadKV("User-Agent", "bobcat");
-        addHeadKV("Accept", "*/*");
-        int len = body == null ? 0 : body.length;
-        addHeadKV("Content-Length", String.valueOf(len));
-        addHeadEnd();
-        if (body != null) {
-            writeStream.append(body);
-        }
-        System.err.println("makeRequest:\n" + StandardCharsets.UTF_8.decode(writeStream.availableBuf()));
+        PipeHandler.Go(() -> {
+            InetSocketAddress address = new InetSocketAddress(uri.getHost(), finalPort);
+            return address;
+        }).onSuccess(addr -> {
+            if (HttpServer.impl().GetClient(id) == null) {
+                return;
+            }
+            try {
+                channel.connect(addr);
+                String query = uri.getRawQuery();
+                String path = query == null ? uri.getRawPath() : uri.getRawPath() + "?" + query;
+                AddMethodUrl(method, path);
+                addHeadKV("Host", addr.getHostName());
+                addHeadKV("User-Agent", "bobcat");
+                addHeadKV("Accept", "*/*");
+                int len = body == null ? 0 : body.length;
+                addHeadKV("Content-Length", String.valueOf(len));
+                addHeadEnd();
+                if (body != null) {
+                    writeStream.append(body);
+                }
+                System.err.println("makeRequest:\n" + StandardCharsets.UTF_8.decode(writeStream.availableBuf()));
+            } catch (Exception e) {
+                close();
+                e.printStackTrace();
+            }
+        });
+
     }
 
     @Override

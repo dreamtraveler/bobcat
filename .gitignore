@@ -4,3 +4,4 @@ target
 *.jar
 *.cer
 *.jks
+.settings

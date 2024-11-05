@@ -34,8 +34,6 @@ public class SslSock implements ISock {
     private ByteBuffer peerNetData;
     private ByteBuffer myNetData;
 
-    private static ExecutorService executor = Executors.newSingleThreadExecutor();
-
     private static class TrustAllManager implements X509TrustManager {
 
         @Override
@@ -217,17 +215,20 @@ public class SslSock implements ISock {
                     }
                     Runnable task = engine.getDelegatedTask();
                     if (task != null) {
-                        executor.execute(() -> {
+                        PipeHandler.Go(() -> {
                             task.run();
-                            System.err.println("handshake About NEED_TASK...FINISH");
+                            if (key.isValid()) {
+                                key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                            }
+                            return 0;
+                        }).onComplete(ar -> {
                             if (key.isValid()) {
                                 key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
                             }
                         });
                     }
-                    System.err.println("handshake About NEED_TASK...");
                     hsStatus = engine.getHandshakeStatus();
-                    break;
+                    return false;
                 case FINISHED:
                     break;
                 case NOT_HANDSHAKING:

@@ -10,6 +10,8 @@ public class App {
 
     private static App instance;
 
+    private App() {};
+
     static App impl() {
         if (instance == null) {
             instance = new App();
