@@ -117,15 +117,12 @@ public class SslSock implements ISock {
     }
 
     private ByteBuffer handleBufferUnderflow(ByteBuffer buffer, int sessionProposedCapacity) {
-        if (buffer.position() > 0) {
-            buffer.flip();
-        }
-        if (sessionProposedCapacity <= buffer.limit() || buffer.limit() < buffer.capacity()) {
+        if (sessionProposedCapacity <= buffer.limit() || buffer.position() < buffer.limit()) {
             return buffer;
         } else {
             ByteBuffer replaceBuffer = enlargeBuffer(buffer, sessionProposedCapacity);
+            buffer.flip();
             replaceBuffer.put(buffer);
-            replaceBuffer.flip();
             return replaceBuffer;
         }
     }
@@ -140,6 +137,7 @@ public class SslSock implements ISock {
         SSLSession session = engine.getSession();
         hsStatus = engine.getHandshakeStatus();
         while (hsStatus != HandshakeStatus.FINISHED && hsStatus != HandshakeStatus.NOT_HANDSHAKING) {
+            System.out.println("while hsStatus=" + hsStatus);
             switch (hsStatus) {
                 case NEED_UNWRAP:
                     int mark = peerNetData.position();
@@ -259,18 +257,16 @@ public class SslSock implements ISock {
         }
 
         System.out.println("About to read from a client...");
-        if (peerNetData.limit() < peerNetData.capacity()) {
-            peerNetData.compact();
-        }
         int bytesRead = channel.read(peerNetData);
         System.out.println("read bytesRead=" + bytesRead);
-        peerNetData.flip();
-        if (bytesRead > 0 || peerNetData.limit() > 0) {
-            while (peerNetData.hasRemaining()) {
+        if (bytesRead > 0 || peerNetData.position() > 0) {
+            while (peerNetData.position() > 0) {
                 stream.ensureWritable(peerNetData.limit());
                 peerAppData = stream.unusedBuf();
                 int mark = peerAppData.position();
+                peerNetData.flip();
                 SSLEngineResult result = engine.unwrap(peerNetData, peerAppData);
+                peerNetData.compact();
                 switch (result.getStatus()) {
                     case OK:
                         int readN = peerAppData.position() - mark;
@@ -305,8 +301,10 @@ public class SslSock implements ISock {
         System.err.println("About to write to a client...");
         while (stream.len() > 0) {
             myAppData = stream.availableBuf();
+            int mark = myAppData.position();
             myNetData.clear();
             SSLEngineResult result = engine.wrap(myAppData, myNetData);
+            stream.skip(myAppData.position() - mark);
             switch (result.getStatus()) {
                 case OK:
                     myNetData.flip();
@@ -314,7 +312,11 @@ public class SslSock implements ISock {
                         channel.write(myNetData);
                     }
                     System.out.printf("Message sent [%d] bytes to the client\n", stream.len());
-                    return stream.len();
+                    if (stream.len() == 0) {
+                        return stream.size();
+                    } else {
+                        break;
+                    }
                 case BUFFER_OVERFLOW:
                     myNetData = enlargeBuffer(myNetData, engine.getSession().getPacketBufferSize());
                     break;

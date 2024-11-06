@@ -10,7 +10,7 @@ public class HelloHandler extends HttpReentrant {
         ablock(ab -> {
             parentId = client.id();
         }).onRequest(ab -> {
-            sub_client = HttpClient.get(this, "https://www.baidu.com/");
+            sub_client = HttpClient.get(this, "https://news.ycombinator.com/");
         }).onSuccess(ab -> {
             if (sub_client == null) {
                 client.reply(500);
